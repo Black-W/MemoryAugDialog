@@ -11,7 +11,7 @@ class HParams(object):
 
 
 def load_hparams(config_file):
-    with codecs.open(config_file, 'r', encoding='utf8') as f:
+    with codecs.open(config_file, 'r', encoding='utf-8') as f:
         configs = yaml.load(f)
         hparams = HParams(**configs)
         return hparams

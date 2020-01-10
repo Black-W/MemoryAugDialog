@@ -1,3 +1,6 @@
+import math
+
+import numpy
 import torch
 import argparse
 import kgdlg
@@ -6,54 +9,70 @@ from torch import cuda
 import progressbar
 import kgdlg.utils.misc_utils as utils
 import os
+import bleu
 
-def indices_lookup(indices,fields):
 
+def indices_lookup(indices, fields):
     words = [fields['tgt'].vocab.itos[i] for i in indices]
     sent = ' '.join(words)
     return sent
 
 
-def batch_indices_lookup(batch_indices,fields):
-
+def batch_indices_lookup(batch_indices, fields):
     batch_sents = []
     for sent_indices in batch_indices:
-        sent = indices_lookup(sent_indices,fields)
+        sent = indices_lookup(sent_indices, fields)
         batch_sents.append(sent)
     return batch_sents
 
 
-
-def inference_file(translator, 
-                   data_iter, 
+def inference_file(translator,
+                   data_iter,
+                   test_data_file,
                    test_out, fields):
-
     print('start decoding ...')
+    total_score, total_words = 0, 0
     with open(test_out, 'w', encoding='utf8') as tgt_file:
         bar = progressbar.ProgressBar()
-
         for batch in bar(data_iter):
             ret = translator.inference_batch(batch)
+            # 注意！
+            # ret["predictions"]记录的是生成的beam size个回复中的前n_best个
+            # ret["scores"]记录的是生成的beam size个回复的全部score,计算perplexity时只要求前n_best个的和
+            total_score += ret['scores'][0][0]  # 一定正确
+            total_words += numpy.array(ret['predictions'][0]).shape[1] # 单词个数（包括</s>）
+            # print("ret['predictions'][0]", ret['predictions'][0])
+            # print("ret['scores'][0]", ret['scores'][0])
+            # print("ret['scores']", ret['scores'])
+            # print("ret['scores'] shape", numpy.array(ret['scores']).shape)
+            # print("ret['predictions'] shape", numpy.array(ret['predictions']).shape)
             batch_sents = batch_indices_lookup(ret['predictions'][0], fields)
             for sent in batch_sents:
-                tgt_file.write(sent+'\n')
+                tgt_file.write(sent + '\n')
+    print(test_out)
+    ppl = math.exp(-total_score / total_words)
+    # print('total_score: ', total_score)
+    # print('total_words: ', total_words)
+    print('test PPL: ', ppl)
+
 
 def make_test_data_iter(data_path, fields, device, opt):
-    if opt.vae_type in [0, 1, 2, 3, 4, 5]: #TODO it is better for 5 to use "tgt" from train dataset 
-        test_dataset = kgdlg.IO.InferDataset(
+    if opt.vae_type in [0, 1, 2, 3, 4, 5]:  # TODO it is better for 5 to use "tgt" from train dataset
+        test_datasdet = kgdlg.IO.InferDataset(
             data_path=data_path,
             fields=[('src', fields["src"])])
     elif opt.vae_type in [6, 7, 8]:
-        test_dataset = kgdlg.IO.TrainDataset( # Train Dataset
-                data_path=data_path,
-                fields=[('src', fields["src"]),
-                ('tgt', fields["tgt"])])
+        test_dataset = kgdlg.IO.TrainDataset(  # Train Dataset
+            data_path=data_path,
+            fields=[('src', fields["src"]),
+                    ('tgt', fields["tgt"])])
 
     test_data_iter = kgdlg.IO.OrderedIterator(
-                dataset=test_dataset, device=device,
-                batch_size=1, train=False, sort=False,
-                sort_within_batch=True, shuffle=False)
+        dataset=test_dataset, device=device,
+        batch_size=1, train=False, sort=False,
+        sort_within_batch=True, shuffle=False)
     return test_data_iter
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -68,11 +87,10 @@ def main():
     parser.add_argument("-beam_size", type=int)
     parser.add_argument("-decode_max_length", type=int)
 
-
     args = parser.parse_args()
-    if 1 == args.config_from_local_or_loaded_model: # loaded model (from out_dir)
+    if 1 == args.config_from_local_or_loaded_model:  # loaded model (from out_dir)
         opt = utils.load_hparams(args.config_with_loaded_model)
-    elif 0 == args.config_from_local_or_loaded_model: # local (./config.yml)
+    elif 0 == args.config_from_local_or_loaded_model:  # local (./config.yml)
         opt = utils.load_hparams(args.config)
     opt.out_dir = os.path.dirname(args.model)
 
@@ -83,18 +101,18 @@ def main():
             opt.cluster_param_in_cuda = 0
         else:
             cuda.set_device(args.gpuid[0])
-            device = torch.device('cuda',args.gpuid[0])
+            device = torch.device('cuda', args.gpuid[0])
             opt.gpuid = int(args.gpuid[0])
             opt.use_cuda = True
-    #print("use_cuda:", use_cuda, "device:", device)
+    # print("use_cuda:", use_cuda, "device:", device)
 
     fields = kgdlg.IO.load_fields_from_vocab(
-                torch.load(args.vocab))
+        torch.load(args.vocab))
     test_data_iter = make_test_data_iter(args.test_data, fields, device, opt)
-    model = kgdlg.ModelConstructor.create_base_model(opt,fields)
+    model = kgdlg.ModelConstructor.create_base_model(opt, fields)
 
     print('Loading parameters ...')
-    #print('args.model:', args.model)
+    # print('args.model:', args.model)
 
     if 0 == opt.load_model_mode_for_inference:
         model.load_checkpoint(args.model)
@@ -102,16 +120,18 @@ def main():
         model.load_checkpoint_by_layers(args.model)
     if opt.use_cuda:
         model.set_paramater_to_cuda()
-        #model = model.cuda()  # Main Set GPU
+        # model = model.cuda()  # Main Set GPU
 
-    translator = kgdlg.Inferer(model=model, 
-                                fields=fields,
-                                beam_size=args.beam_size, 
-                                opt=opt,
-                                n_best=1,
-                                max_length=args.decode_max_length,
-                                global_scorer=None)
-    inference_file(translator, test_data_iter, args.test_out, fields)
+    translator = kgdlg.Inferer(model=model,
+                               fields=fields,
+                               beam_size=args.beam_size,
+                               opt=opt,
+                               n_best=1,
+                               max_length=args.decode_max_length,
+                               global_scorer=None)
+
+    inference_file(translator, test_data_iter, args.test_data, args.test_out, fields)
+
 
 if __name__ == '__main__':
     main()

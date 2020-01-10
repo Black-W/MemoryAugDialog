@@ -148,7 +148,7 @@ class FCLayer(nn.Module):
         return y
 
 class VariationalInference(nn.Module):
-     """ VariationalInference and GMM """
+     """ Variational Inference and GMM """
      def __init__(self, opt, fc_use_bias=True):
          #self.multigpu = opt.multigpu
          super(VariationalInference, self).__init__()
@@ -390,6 +390,7 @@ class LatentNet(nn.Module):
             prior_z = prior_tgt
 
         prior_z_with_src = self.concate_and_decode_prior(src, prior_z)
+        #print('prior_z_with_src:__________________________\n',prior_z_with_src)
         return prior_z_with_src
 
     def inference_by_posterior(self, src, tgt, memory_tgt):

@@ -4,11 +4,14 @@ import torchtext
 from collections import Counter, defaultdict
 import codecs
 
+from kgdlg.load_custom_embeddings import load_custom_embeddings
+
 PAD_WORD = '<blank>'
 UNK_WORD = '<unk>'
 UNK = 0
 BOS_WORD = '<s>'
 EOS_WORD = '</s>'
+
 
 def _getstate(self):
     return dict(self.__dict__, stoi=dict(self.stoi))
@@ -22,12 +25,17 @@ def _setstate(self, state):
 torchtext.vocab.Vocab.__getstate__ = _getstate
 torchtext.vocab.Vocab.__setstate__ = _setstate
 
-def get_fields():
 
+def get_fields():
     fields = {}
-    fields["src"] = torchtext.data.Field(init_token=BOS_WORD, eos_token=EOS_WORD,pad_token=PAD_WORD, include_lengths=True)
-    fields["tgt"] = torchtext.data.Field(init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD, include_lengths=True)
+    fields["src"] = torchtext.data.Field(init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD,
+                                         include_lengths=True)
+    fields["tgt"] = torchtext.data.Field(init_token=BOS_WORD, eos_token=EOS_WORD, pad_token=PAD_WORD,
+                                         include_lengths=True)
+    fields['src_emo'] = torchtext.data.LabelField()
+    fields['tgt_emo'] = torchtext.data.LabelField()
     return fields
+
 
 def load_fields_from_vocab(vocab):
     vocab = dict(vocab)
@@ -37,6 +45,7 @@ def load_fields_from_vocab(vocab):
         v.stoi = defaultdict(lambda: 0, v.stoi)
         fields[k].vocab = v
     return fields
+
 
 def save_fields_to_vocab(fields):
     """
@@ -49,18 +58,40 @@ def save_fields_to_vocab(fields):
             vocab.append((k, f.vocab))
     return vocab
 
+
 def build_vocab(train, opt):
     fields = train.fields
-    fields["src"].build_vocab(train, max_size=opt.src_vocab_size)  
-    fields["tgt"].build_vocab(train, max_size=opt.tgt_vocab_size)
+
+    # 使用预训练的词向量
+    custom_embeddings = load_custom_embeddings(opt.pretrained_embeddings)
+    fields["src"].build_vocab(train, vectors=custom_embeddings)
+    fields["tgt"].build_vocab(train, vectors=custom_embeddings)
+
+    # 数据集自己训练词向量
+    # fields["src"].build_vocab(train, max_size=opt.src_vocab_size)
+    # fields["tgt"].build_vocab(train, max_size=opt.tgt_vocab_size)
+
+    # 情感标签
+    fields["src_emo"].build_vocab(train)
+    fields["tgt_emo"].vocab = fields["src_emo"].vocab
+
     if opt.merge_vocab:
         merged_vocab = merge_vocabs(
             [fields["src"].vocab, fields["tgt"].vocab],
-            vocab_size = opt.merged_vocab_size
+            vocab_size=opt.merged_vocab_size
         )
 
         fields["src"].vocab = merged_vocab
         fields["tgt"].vocab = merged_vocab
+
+    print('src vocab_size:', len(fields["src"].vocab))
+    print('tgt vocab_size:', len(fields["tgt"].vocab))
+
+    print('src label vocab_size:', len(fields["src_emo"].vocab))
+    print(f'src label: {fields["src_emo"].vocab.itos}')
+
+    print('tgt label vocab_size:', len(fields["tgt_emo"].vocab))
+    print(f'tgt label: {fields["tgt_emo"].vocab.itos}')
 
 
 def merge_vocabs(vocabs, vocab_size=None):
@@ -93,32 +124,30 @@ class TrainDataset(torchtext.data.Dataset):
     def __init__(self, data_path, fields, **kwargs):
 
         make_example = torchtext.data.Example.fromlist
-        with open(data_path, 'r', encoding="utf8",errors='ignore') as data_f:
+        with open(data_path, 'r', encoding="utf8", errors='ignore') as data_f:
             examples = []
             for line in data_f:
                 data = line.strip().split('\t')
-                if len(data) != 2:
+                if len(data) != 4:
                     continue
-                src,tgt = data[0],data[1]
+                src, src_emo, tgt, tgt_emo = data[0], data[1], data[2], data[3]
                 if len(src) == 0 or len(tgt) == 0:
-                    print("miss: %s,%s"%(src,tgt))
+                    print("miss: %s,%s" % (src, tgt))
                     continue
-                examples.append(make_example([src,tgt],fields))
-        
-        super(TrainDataset, self).__init__(examples, fields, **kwargs)    
-
+                examples.append(make_example([src, src_emo, tgt, tgt_emo], fields))
+        print('examples size : ', len(examples))
+        super(TrainDataset, self).__init__(examples, fields, **kwargs)
 
     def __getstate__(self):
         return self.__dict__
 
     def __setstate__(self, d):
         self.__dict__.update(d)
-    
+
 
 class InferDataset(torchtext.data.Dataset):
-    
-    
-    def __init__(self, data_path, fields,  **kwargs):
+
+    def __init__(self, data_path, fields, **kwargs):
 
         make_example = torchtext.data.Example.fromlist
         with open(data_path, 'r', encoding="utf8") as src_f:
@@ -126,10 +155,10 @@ class InferDataset(torchtext.data.Dataset):
             for src in src_f:
                 src = src.strip().split(' ')
                 src = ' '.join(src)
-                examples.append(make_example([src,],fields))
+                examples.append(make_example([src, ], fields))
 
-        super(InferDataset, self).__init__(examples, fields, **kwargs)    
-    
+        super(InferDataset, self).__init__(examples, fields, **kwargs)
+
     def sort_key(self, ex):
         """ Sort using length of source sentences. """
         # Default to a balanced sort, prioritizing tgt len match.
@@ -137,7 +166,6 @@ class InferDataset(torchtext.data.Dataset):
         if hasattr(ex, "tgt"):
             return -len(ex.src), -len(ex.tgt)
         return -len(ex.src)
-
 
     def __getstate__(self):
         return self.__dict__
@@ -162,6 +190,7 @@ class OrderedIterator(torchtext.data.Iterator):
                             self.batch_size, self.batch_size_fn)
                     for b in random_shuffler(list(p_batch)):
                         yield b
+
             self.batches = pool(self.data(), self.random_shuffler)
         else:
             self.batches = []

@@ -5,14 +5,15 @@ if [ $# -eq 2 ]; then
 generate_mark=""
 fi
 
-GPUID=1
-data_path=data/
-vocab_file=${data_path}/dict_v1.vocab.pt 
+GPUID=$4
 
-test_src_data=$data_path/test_src.txt
-test_tgt_data=$data_path/test_tgt.txt
-test_src_tgt_data=$data_path/test_src_tgt.txt
-test_src_data_uniq=$data_path/test_src_tgt_uniq.txt
+#data_path=../ECM/data/ESTC
+#test_src_data_uniq=$data_path/test_uniq_src.txt
+
+data_path=../ECM/data/NLPCC2017
+test_src_data_uniq=$data_path/valid.txt
+
+vocab_file=${data_path}/dict_v1.vocab.pt
 
 decode_max_length=50
 beam_size=10
@@ -27,10 +28,7 @@ log=log/log_gene_${mark}_tdv22_epoch${modelID}${generate_mark}
 err=log/err_gene_${mark}_tdv22_epoch${modelID}${generate_mark}
 res=result/res_gene_${mark}_tdv22_epoch${modelID}${generate_mark}
 
-PYTHON=python
-
-function inference_on_uniq_data() {
-${PYTHON} inference.py \
+python inference.py \
     -gpuid ${GPUID} \
     -test_data $test_src_data_uniq \
     -test_out $res \
@@ -40,7 +38,4 @@ ${PYTHON} inference.py \
     -model $model \
     -beam_size ${beam_size} \
     -decode_max_length ${decode_max_length} \
-    -vocab $vocab_file > ${log} 2> ${err}
-}
-
-inference_on_uniq_data
+    -vocab $vocab_file 2> ${err} | tee ${log}
